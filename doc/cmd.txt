@@ -1,0 +1,26 @@
+docker run -d \
+  --name postgres \
+  --network banking-network \
+  -e POSTGRES_USER=banking \
+  -e POSTGRES_PASSWORD=banking \
+  -e POSTGRES_DB=customer_db \
+  -p 5432:5432 \
+  -v banking-data:/var/lib/postgresql/data \
+  -v /mnt/c/MBBTraining/cloud-native-training-sept/docker/init:/docker-entrypoint-initdb.d \
+  postgres:18
+
+
+docker run -d --name account-service -p 8082:8082 -e DB_URL=jdbc:postgresql://postgres:5432/account_db -e DB_USERNAME=banking -e DB_PASSWORD=banking -e CUSTOMER_SERVICE_URL=http://customer-service:8081 --network banking-network accountservice:latest
+
+docker run -d --name customer-service -p 8081:8081 -e DB_URL=jdbc:postgresql://postgres:5432/customer_db -e DB_USERNAME=banking -e DB_PASSWORD=banking --network banking-network customerservice:latest
+
+docker run -d --name account-service -p 8081:8081 --network banking-network accountservice:v1
+
+docker run -d --name retailweb -p 7000:7080 --network banking-network retailweb:lastest
+
+
+docker build -t retailweb:lastest .
+
+docker build -t customerservice:latest .
+docker build -t accountservice:latest .
+
