@@ -1,0 +1,76 @@
+version: "3.9"
+
+services:
+  postgres:
+    image: postgres:16
+    container_name: postgres-db
+    restart: always
+    environment:
+      POSTGRES_USER: $DB_USER
+      POSTGRES_PASSWORD: $DB_PASSWORD
+      POSTGRES_DB: $CUSTOMER_DB
+    ports:
+      - "5432:5432"
+    networks:
+      - app-network
+    volumes:
+      - banking-data:/var/lib/postgresql/data
+
+  customer-service:
+    build: ./backend/customer-service
+    image: solo01akslab.azurecr.io/customer-service:arosa19
+    container_name: customer-service
+    restart: always
+    environment:
+      DB_URL: jdbc:postgresql://postgres:5432/$CUSTOMER_DB
+      DB_USERNAME: $DB_USER
+      DB_PASSWORD: $DB_PASSWORD
+    ports:
+      - "8081:8081"
+    depends_on:
+      - postgres
+    networks:
+      - app-network
+
+  account-service:
+    build: ./backend/account-service
+    image: solo01akslab.azurecr.io/account-service:arosa19
+    container_name: account-service
+    restart: always
+    environment:
+      DB_URL: jdbc:postgresql://postgres:5432/$ACCOUNT_DB
+      DB_USERNAME: $DB_USER
+      DB_PASSWORD: $DB_PASSWORD
+      CUSTOMER_SERVICE_URL: http://customer-service:8081
+    ports:
+      - "8082:8082"
+    depends_on:
+      - postgres
+      - customer-service
+    networks:
+      - app-network
+
+  frontend:
+    build: ./frontend
+    image: solo01akslab.azurecr.io/frontend:arosa19
+    container_name: frontend
+    restart: always
+    environment:
+      API_ACCOUNT_URL: http://account-service:8082
+      API_CUSTOMER_URL: http://customer-service:8081
+    ports:
+      - "7000:7080"
+    depends_on:
+      - customer-service
+      - account-service
+    networks:
+      - app-network
+
+networks:
+  app-network:
+    driver: bridge
+
+volumes:
+  banking-data:
+    name: banking-data
+
