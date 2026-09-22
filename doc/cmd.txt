@@ -25,3 +25,9 @@ docker build -t customerservice:latest .
 docker build -t accountservice:latest .
 
 docker login solo01akslab.azurecr.io -u solo01akslab -p 7VMmR8K0ijnV3VnLw0WMVRgA3DTiI5rEYTFh13jO3X6F3bFJiNShJQQJ99CIACGhslBEqg7NAAACAZCRaAHC
+
+
+For your Frontend: kubectl logs deployment/frontend -n arosa19
+For Customer Backend: kubectl logs deployment/customer-service -n arosa19
+For Account Backend: kubectl logs deployment/account-service -n arosa19
+For Database: kubectl logs deployment/postgres -n arosa19

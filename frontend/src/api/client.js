@@ -1,12 +1,12 @@
 import axios from "axios";
 
 export const customerApi = axios.create({
-  baseURL: import.meta.env.VITE_CUSTOMER_API_URL || "http://localhost:8081",
+  baseURL: window._env_?.VITE_CUSTOMER_API_URL || import.meta.env.VITE_CUSTOMER_API_URL || "http://localhost:8081",
   headers: { "Content-Type": "application/json" },
 });
 
 export const accountApi = axios.create({
-  baseURL: import.meta.env.VITE_ACCOUNT_API_URL || "http://localhost:8082",
+  baseURL: window._env_?.VITE_ACCOUNT_API_URL || import.meta.env.VITE_ACCOUNT_API_URL || "http://localhost:8082",
   headers: { "Content-Type": "application/json" },
 });
 

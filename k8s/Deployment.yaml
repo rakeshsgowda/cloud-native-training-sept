@@ -1,0 +1,380 @@
+# =========================================================================
+# 0. NAMESPACE DEFINITION
+# =========================================================================
+#apiVersion: v1
+#kind: Namespace
+#metadata:
+#  name: arosa19
+#---
+# =========================================================================
+# 1. DATABASE CONFIGURATION & INITIALIZATION SCRIPTS (ConfigMap)
+# =========================================================================
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: db-init-scripts
+  namespace: arosa19
+data:
+  init-multiple-databases.sh: |
+    #!/bin/bash
+    set -e
+    set -u
+
+    echo "Running custom database bootstrapping script..."
+
+    # Use the default internal administrative "postgres" superuser to create the custom role and databases
+    psql -v ON_ERROR_STOP=1 --username "postgres" --dbname "postgres" <<-EOSQL
+        -- 1. Explicitly create the 'banking' user role if it does not exist
+        DO \$\$
+        BEGIN
+            IF NOT EXISTS (SELECT FROM pg_catalog.pg_roles WHERE rolname = '$APP_DB_USER') THEN
+                CREATE ROLE "$APP_DB_USER" WITH LOGIN PASSWORD '$APP_DB_PASSWORD' SUPERUSER;
+            END IF;
+        END
+        \$\$;
+
+        -- 2. Create the databases if they do not exist
+        SELECT 'CREATE DATABASE customer_db' WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'customer_db')\gexec
+        SELECT 'CREATE DATABASE account_db' WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'account_db')\gexec
+    EOSQL
+
+    # Connect to the individual databases to configure schema permissions
+    psql -v ON_ERROR_STOP=1 --username "postgres" --dbname "postgres" <<-EOSQL
+        -- 3. Connect to Customer DB and configure privileges
+        \connect customer_db
+
+        GRANT ALL PRIVILEGES ON DATABASE customer_db TO "$APP_DB_USER";
+        GRANT ALL PRIVILEGES ON SCHEMA public TO "$APP_DB_USER";
+        ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL PRIVILEGES ON TABLES TO "$APP_DB_USER";
+        ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL PRIVILEGES ON SEQUENCES TO "$APP_DB_USER";
+
+        -- 4. Connect to Account DB and configure privileges
+        \connect account_db
+
+        GRANT ALL PRIVILEGES ON DATABASE account_db TO "$APP_DB_USER";
+        GRANT ALL PRIVILEGES ON SCHEMA public TO "$APP_DB_USER";
+        ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL PRIVILEGES ON TABLES TO "$APP_DB_USER";
+        ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL PRIVILEGES ON SEQUENCES TO "$APP_DB_USER";
+    EOSQL
+    
+    echo "Database bootstrapping completed successfully."
+---
+# =========================================================================
+# 2. FRONTEND RUNTIME ENVIRONMENT RESOLUTION (ConfigMap)
+# =========================================================================
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: frontend-env-config
+  namespace: arosa19
+data:
+  env-config.js: |
+    window._env_ = {
+        VITE_CUSTOMER_API_URL: window.location.origin + "/api/customer",
+        VITE_ACCOUNT_API_URL: window.location.origin + "/api/account"
+    };
+---
+# =========================================================================
+# 3. DATABASE SECRET (Secure Credentials)
+# =========================================================================
+apiVersion: v1
+kind: Secret
+metadata:
+  name: db-secret
+  namespace: arosa19
+type: Opaque
+stringData:
+  postgres-user: "banking"              # The app user created by the script
+  postgres-password: "SecurePassword123!" # The app password assigned by the script
+  customer-db: "customer_db"
+  account-db: "account_db"
+---
+# =========================================================================
+# 4. PERSISTENT STORAGE FOR POSTGRES (banking-data Volume)
+# =========================================================================
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: banking-data-pvc
+  namespace: arosa19
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: managed-csi
+  resources:
+    requests:
+      storage: 4Gi
+---
+# =========================================================================
+# 5. POSTGRES DATABASE
+# =========================================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgres
+  namespace: arosa19
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: postgres
+  template:
+    metadata:
+      labels:
+        app: postgres
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:16
+          ports:
+            - containerPort: 5432
+          env:
+            # The container needs to boot with the default 'postgres' user to run the init script successfully
+            - name: POSTGRES_USER
+              value: "postgres"
+            - name: POSTGRES_DB
+              value: "postgres"
+            - name: POSTGRES_PASSWORD
+              value: "root_admin_password_dont_change"
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+
+            # We inject your secret values as custom env tokens for our shell script to parse
+            - name: APP_DB_USER
+              valueFrom:
+                secretKeyRef:
+                  name: db-secret
+                  key: postgres-user
+            - name: APP_DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: db-secret
+                  key: postgres-password
+          volumeMounts:
+            - name: db-storage
+              mountPath: /var/lib/postgresql/data
+            - name: init-scripts
+              mountPath: /docker-entrypoint-initdb.d
+      volumes:
+        - name: db-storage
+          persistentVolumeClaim:
+            claimName: banking-data-pvc
+        - name: init-scripts
+          configMap:
+            name: db-init-scripts
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  namespace: arosa19
+spec:
+  type: ClusterIP
+  selector:
+    app: postgres
+  ports:
+    - protocol: TCP
+      port: 5432
+      targetPort: 5432
+---
+# =========================================================================
+# 6. CUSTOMER SERVICE (Backend 1)
+# =========================================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: customer-service
+  namespace: arosa19
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: customer-service
+  template:
+    metadata:
+      labels:
+        app: customer-service
+    spec:
+      containers:
+        - name: customer-service
+          image: solo01akslab.azurecr.io/customer-service:arosa19
+          ports:
+            - containerPort: 8081
+          env:
+            - name: CUSTOMER_DB
+              valueFrom:
+                secretKeyRef:
+                  name: db-secret
+                  key: customer-db
+            - name: DB_URL
+              value: "jdbc:postgresql://postgres:5432/$(CUSTOMER_DB)"
+            - name: DB_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: db-secret
+                  key: postgres-user
+            - name: DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: db-secret
+                  key: postgres-password
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: customer-service
+  namespace: arosa19
+spec:
+  type: ClusterIP
+  selector:
+    app: customer-service
+  ports:
+    - protocol: TCP
+      port: 8081
+      targetPort: 8081
+---
+# =========================================================================
+# 7. ACCOUNT SERVICE (Backend 2)
+# =========================================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: account-service
+  namespace: arosa19
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: account-service
+  template:
+    metadata:
+      labels:
+        app: account-service
+    spec:
+      containers:
+        - name: account-service
+          image: solo01akslab.azurecr.io/account-service:arosa19
+          ports:
+            - containerPort: 8082
+          env:
+            - name: ACCOUNT_DB
+              valueFrom:
+                secretKeyRef:
+                  name: db-secret
+                  key: account-db
+            - name: DB_URL
+              value: "jdbc:postgresql://postgres:5432/$(ACCOUNT_DB)"
+            - name: DB_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: db-secret
+                  key: postgres-user
+            - name: DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: db-secret
+                  key: postgres-password
+            - name: CUSTOMER_SERVICE_URL
+              value: "http://customer-service:8081"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: account-service
+  namespace: arosa19
+spec:
+  type: ClusterIP
+  selector:
+    app: account-service
+  ports:
+    - protocol: TCP
+      port: 8082
+      targetPort: 8082
+---
+# =========================================================================
+# 8. FRONTEND
+# =========================================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: frontend
+  namespace: arosa19
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: frontend
+  template:
+    metadata:
+      labels:
+        app: frontend
+    spec:
+      containers:
+        - name: frontend
+          image: solo01akslab.azurecr.io/frontend:arosa19
+          ports:
+            - containerPort: 7080
+          volumeMounts:
+            - name: runtime-env-volume
+              mountPath: /app/retailweb/env-config.js
+              subPath: env-config.js
+      volumes:
+        - name: runtime-env-volume
+          configMap:
+            name: frontend-env-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: frontend-service
+  namespace: arosa19
+spec:
+  type: ClusterIP
+  selector:
+    app: frontend
+  ports:
+    - protocol: TCP
+      port: 7000
+      targetPort: 7080
+---
+# =========================================================================
+# 9. INGRESS CONTROLLER (Provides the single Auto Public IP)
+# =========================================================================
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: retail-app-ingress
+  namespace: arosa19
+  annotations:
+    nginx.ingress.kubernetes.io/rewrite-target: /$2
+spec:
+  ingressClassName: webapprouting.kubernetes.azure.com
+  rules:
+    - http:
+        paths:
+          # 1. Routes base traffic to the frontend website
+          - path: /()(.*)
+            pathType: ImplementationSpecific
+            backend:
+              service:
+                name: frontend-service
+                port:
+                  number: 7000
+          # 2. Proxy routes /api/customer paths seamlessly to the customer backend
+          - path: /api/customer(/(.*))?
+            pathType: ImplementationSpecific
+            backend:
+              service:
+                name: customer-service
+                port:
+                  number: 8081
+          # 3. Proxy routes /api/account paths seamlessly to the account backend
+          - path: /api/account(/(.*))?
+            pathType: ImplementationSpecific
+            backend:
+              service:
+                name: account-service
+                port:
+                  number: 8082

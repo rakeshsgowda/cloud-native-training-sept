@@ -1,0 +1,54 @@
+==============================================================
+        HOW TO CONNECT TO YOUR AKS KUBERNETES LAB
+==============================================================
+
+Your access file  : aks.kubeconfig   (on this Desktop)
+Your namespace    : you have your own isolated namespace on the
+                    shared AKS cluster. You can only work inside it.
+
+--------------------------------------------------------------
+STEP 1 - Open a terminal (PowerShell or Command Prompt)
+--------------------------------------------------------------
+
+--------------------------------------------------------------
+STEP 2 - Point kubectl at your kubeconfig file
+--------------------------------------------------------------
+  PowerShell:
+     $env:KUBECONFIG = "$HOME\Desktop\aks.kubeconfig"
+
+  Command Prompt (cmd):
+     set KUBECONFIG=%USERPROFILE%\Desktop\aks.kubeconfig
+
+--------------------------------------------------------------
+STEP 3 - Verify you are connected (run inside YOUR namespace)
+--------------------------------------------------------------
+     kubectl get all
+     kubectl get pods
+
+  NOTE: cluster-wide commands like 'kubectl get nodes' will show
+  "Forbidden" - this is EXPECTED. You only have access to your own
+  namespace, not the whole cluster. That is not a login error.
+
+--------------------------------------------------------------
+WHAT YOU CAN DO (inside your own namespace)
+--------------------------------------------------------------
+  - Create Deployments :  kubectl create deployment web --image=nginx
+  - Expose a Service   :  kubectl expose deployment web --port=80
+  - Create ConfigMaps  :  kubectl create configmap myconf --from-literal=k=v
+  - Create Secrets     :  kubectl create secret generic mysecret --from-literal=p=1
+  - Create PVCs        :  kubectl apply -f pvc.yaml
+  - View everything    :  kubectl get pods,svc,deploy
+
+Note: You are limited to your own namespace. Actions outside it,
+or cluster-level actions (nodes, other namespaces), are blocked.
+
+--------------------------------------------------------------
+IF kubectl IS NOT INSTALLED
+--------------------------------------------------------------
+  Run in PowerShell:
+     curl -LO "https://dl.k8s.io/release/v1.30.0/bin/windows/amd64/kubectl.exe"
+  Then use  .\kubectl.exe  instead of  kubectl.
+
+==============================================================
+              Synergific Software - Cloud Labs
+==============================================================

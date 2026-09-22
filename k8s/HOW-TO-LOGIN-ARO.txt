@@ -1,0 +1,73 @@
+================================================================
+        HOW TO ACCESS YOUR OPENSHIFT (ARO) LAB
+================================================================
+
+Your username    : see the credentials sheet (arosaN)
+Your password    : see the credentials sheet
+Your project     : you have your own isolated project (namespace)
+
+----------------------------------------------------------------
+A) WEB CONSOLE LOGIN  (easiest)
+----------------------------------------------------------------
+  1. Open in a browser:
+     https://console-openshift-console.apps.staragilearo01.southindia.aroapp.io
+
+  2. On the login page, choose the provider:   lab-htpasswd
+  3. Enter your username (arosaN) and password.
+  4. You land in your own project. You can create Deployments,
+     Services, Routes, ConfigMaps, Secrets, PVCs from the UI.
+
+----------------------------------------------------------------
+B) COMMAND LINE LOGIN  (oc CLI)
+----------------------------------------------------------------
+     oc login https://api.staragilearo01.southindia.aroapp.io:6443 -u arosaN -p <password>
+
+     oc get all            (works - shows your project)
+     oc new-app https://github.com/<repo>    (build + deploy from Git)
+
+  NOTE: cluster-wide commands (oc get nodes, other projects) will
+  say "Forbidden" - this is EXPECTED. You only have your own project.
+
+================================================================
+   CONTAINER REGISTRY - push your own images
+================================================================
+Registry URL:
+   default-route-openshift-image-registry.apps.staragilearo01.southindia.aroapp.io
+
+STEP 1 - Log in to OpenShift (see B above), then log in to the registry.
+   The registry password is your login TOKEN, not your normal password:
+
+   PowerShell / bash:
+     oc whoami -t | docker login -u arosaN --password-stdin ^
+        default-route-openshift-image-registry.apps.staragilearo01.southindia.aroapp.io ^
+        --tls-verify=false
+
+   (podman works the same - replace 'docker' with 'podman')
+
+STEP 2 - Tag your image for YOUR project, then push:
+     docker tag myapp:latest ^
+       default-route-openshift-image-registry.apps.staragilearo01.southindia.aroapp.io/arosaN/myapp:latest
+
+     docker push ^
+       default-route-openshift-image-registry.apps.staragilearo01.southindia.aroapp.io/arosaN/myapp:latest ^
+       --tls-verify=false
+
+STEP 3 - Use the image in a Deployment (reference the INTERNAL path):
+     image-registry.openshift-image-registry.svc:5000/arosaN/myapp:latest
+
+IMPORTANT:
+  - Replace  arosaN  with YOUR own username / project everywhere.
+  - Push URL   = the external 'default-route-...' address (from your laptop).
+  - Pod image  = the internal '...svc:5000' address (inside the cluster).
+  - You can ONLY push to your own project. Pushing to another
+    participant's project is blocked (401 Unauthorized).
+  - --tls-verify=false is needed (the route uses a self-signed cert).
+
+  EASIEST (no local docker needed): let OpenShift build it for you-
+     oc new-app https://github.com/<your-repo>
+  This builds the image inside the cluster and pushes to the registry
+  automatically.
+
+================================================================
+              Synergific Software - Cloud Labs
+================================================================
