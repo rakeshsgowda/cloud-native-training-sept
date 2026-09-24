@@ -1,0 +1,138 @@
+services:
+
+  # ============================================================
+  # PostgreSQL Database
+  # ============================================================
+  postgres:
+    image: postgres:16
+    container_name: postgres
+    environment:
+      POSTGRES_DB: customer_db
+      POSTGRES_USER: banking
+      POSTGRES_PASSWORD: banking
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./docker/postgres/init:/docker-entrypoint-initdb.d
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U banking -d customer_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - banking-network
+
+
+  # ============================================================
+  # Kafka (KRaft Mode - No Zookeeper)
+  # ============================================================
+  kafka:
+    image: confluentinc/cp-kafka:7.6.0
+    container_name: kafka
+    ports:
+      - "9092:9092"
+      - "29092:29092"
+    environment:
+      # KRaft Configuration
+      KAFKA_NODE_ID: 1
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: 'CONTROLLER:PLAINTEXT,INTERNAL:PLAINTEXT,EXTERNAL:PLAINTEXT'
+      KAFKA_ADVERTISED_LISTENERS: 'INTERNAL://kafka:9092,EXTERNAL://localhost:29092'
+      KAFKA_LISTENERS: 'INTERNAL://0.0.0.0:9092,EXTERNAL://0.0.0.0:29092,CONTROLLER://0.0.0.0:9093'
+      KAFKA_INTER_BROKER_LISTENER_NAME: 'INTERNAL'
+      KAFKA_CONTROLLER_LISTENER_NAMES: 'CONTROLLER'
+      KAFKA_CONTROLLER_QUORUM_VOTERS: '1@kafka:9093'
+      KAFKA_PROCESS_ROLES: 'broker,controller'
+
+      # Cluster & Topic Settings
+      CLUSTER_ID: 'MkU3OEVBNTcwNTJENDM2Qk'
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_LOG_DIRS: '/tmp/kraft-combined-logs'
+    healthcheck:
+      test: ["CMD", "kafka-broker-api-versions", "--bootstrap-server", "localhost:9092"]
+      interval: 10s
+      timeout: 10s
+      retries: 5
+    networks:
+      - banking-network
+
+
+  # ============================================================
+  # Customer Service
+  # ============================================================
+  customer-service:
+    build:
+      context: ./backend/customer-service
+    container_name: customer-service
+    environment:
+      DB_URL: jdbc:postgresql://postgres:5432/customer_db
+      DB_USERNAME: banking
+      DB_PASSWORD: banking
+    ports:
+      - "8081:8081"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - banking-network
+
+
+  # ============================================================
+  # Account Service
+  # ============================================================
+  account-service:
+    build:
+      context: ./backend/account-service
+    container_name: account-service
+    environment:
+      DB_URL: jdbc:postgresql://postgres:5432/account_db
+      DB_USERNAME: banking
+      DB_PASSWORD: banking
+      CUSTOMER_SERVICE_URL: http://customer-service:8081
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+    ports:
+      - "8082:8082"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      customer-service:
+        condition: service_started
+      kafka:
+        condition: service_healthy
+    networks:
+      - banking-network
+
+
+  # ============================================================
+  # React Frontend
+  # ============================================================
+  frontend:
+    build:
+      context: ./frontend
+    container_name: frontend
+    ports:
+      - "5173:80"
+    depends_on:
+      customer-service:
+        condition: service_started
+      account-service:
+        condition: service_started
+    networks:
+      - banking-network
+
+
+# ==============================================================
+# Persistent Volumes
+# ==============================================================
+volumes:
+  postgres-data:
+
+
+# ==============================================================
+# Network Definition
+# ==============================================================
+networks:
+  banking-network:
+    driver: bridge

@@ -1,0 +1,434 @@
+1.	backend/account-service/pom.xml
+Add this dependency inside <dependencies>:
+<dependency>
+    <groupId>org.springframework.kafka</groupId>
+    <artifactId>spring-kafka</artifactId>
+</dependency>
+________________________________________
+2. backend/account-service/src/main/resources/application.yml
+Add this block at the end of the file:
+yaml
+spring:
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
+    producer:
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.springframework.kafka.support.serializer.JsonSerializer
+    consumer:
+      group-id: account-service-group
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.springframework.kafka.support.serializer.JsonDeserializer
+      properties:
+        spring.json.trusted.packages: "com.bank.account.event"
+ application.yml already has a top-level spring: key (for application, datasource, jpa, flyway). YAML doesn't allow two top-level spring: blocks — merge kafka: in as a sibling of application, datasource, jpa, flyway under the single existing spring: key, not as a separate block.
+________________________________________
+3. New file — backend/account-service/src/main/java/com/bank/account/event/DepositEvent.java
+java
+package com.bank.account.event;
+
+import java.math.BigDecimal;
+import java.time.LocalDateTime;
+import java.util.UUID;
+
+public class DepositEvent {
+    private String eventId;
+    private Long accountId;
+    private BigDecimal amount;
+    private BigDecimal newBalance;
+    private LocalDateTime timestamp;
+
+    public DepositEvent() {}
+
+    public DepositEvent(Long accountId, BigDecimal amount, BigDecimal newBalance) {
+        this.eventId = UUID.randomUUID().toString();
+        this.accountId = accountId;
+        this.amount = amount;
+        this.newBalance = newBalance;
+        this.timestamp = LocalDateTime.now();
+    }
+
+    public String getEventId() { return eventId; }
+    public void setEventId(String eventId) { this.eventId = eventId; }
+    public Long getAccountId() { return accountId; }
+    public void setAccountId(Long accountId) { this.accountId = accountId; }
+    public BigDecimal getAmount() { return amount; }
+    public void setAmount(BigDecimal amount) { this.amount = amount; }
+    public BigDecimal getNewBalance() { return newBalance; }
+    public void setNewBalance(BigDecimal newBalance) { this.newBalance = newBalance; }
+    public LocalDateTime getTimestamp() { return timestamp; }
+    public void setTimestamp(LocalDateTime timestamp) { this.timestamp = timestamp; }
+}
+4. New file — backend/account-service/src/main/java/com/bank/account/event/WithdrawalEvent.java
+java
+package com.bank.account.event;
+
+import java.math.BigDecimal;
+import java.time.LocalDateTime;
+import java.util.UUID;
+
+public class WithdrawalEvent {
+    private String eventId;
+    private Long accountId;
+    private BigDecimal amount;
+    private BigDecimal newBalance;
+    private LocalDateTime timestamp;
+
+    public WithdrawalEvent() {}
+
+    public WithdrawalEvent(Long accountId, BigDecimal amount, BigDecimal newBalance) {
+        this.eventId = UUID.randomUUID().toString();
+        this.accountId = accountId;
+        this.amount = amount;
+        this.newBalance = newBalance;
+        this.timestamp = LocalDateTime.now();
+    }
+
+    public String getEventId() { return eventId; }
+    public void setEventId(String eventId) { this.eventId = eventId; }
+    public Long getAccountId() { return accountId; }
+    public void setAccountId(Long accountId) { this.accountId = accountId; }
+    public BigDecimal getAmount() { return amount; }
+    public void setAmount(BigDecimal amount) { this.amount = amount; }
+    public BigDecimal getNewBalance() { return newBalance; }
+    public void setNewBalance(BigDecimal newBalance) { this.newBalance = newBalance; }
+    public LocalDateTime getTimestamp() { return timestamp; }
+    public void setTimestamp(LocalDateTime timestamp) { this.timestamp = timestamp; }
+}
+________________________________________
+5. New file — backend/account-service/src/main/java/com/bank/account/config/KafkaProducerConfig.java
+package com.bank.account.config;
+
+import org.apache.kafka.clients.producer.ProducerConfig;
+import org.apache.kafka.common.serialization.StringSerializer;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+import org.springframework.kafka.core.DefaultKafkaProducerFactory;
+import org.springframework.kafka.core.KafkaTemplate;
+import org.springframework.kafka.core.ProducerFactory;
+import org.springframework.kafka.support.serializer.JacksonJsonSerializer;   // CHANGED
+
+import java.util.HashMap;
+import java.util.Map;
+
+@Configuration
+public class KafkaProducerConfig {
+
+    @Value("${spring.kafka.bootstrap-servers}")
+    private String bootstrapServers;
+
+    @Bean
+    public ProducerFactory<String, Object> producerFactory() {
+        Map<String, Object> config = new HashMap<>();
+        config.put(ProducerConfig.BOOTSTRAP_SERVERS_CONFIG, bootstrapServers);
+        config.put(ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG, StringSerializer.class);
+        config.put(ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG, JacksonJsonSerializer.class);  // CHANGED
+        return new DefaultKafkaProducerFactory<>(config);
+    }
+
+    @Bean
+    public KafkaTemplate<String, Object> kafkaTemplate() {
+        return new KafkaTemplate<>(producerFactory());
+    }
+}}
+6. New file — backend/account-service/src/main/java/com/bank/account/config/KafkaConsumerConfig.java
+package com.bank.account.config;
+
+import org.apache.kafka.clients.consumer.ConsumerConfig;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+import org.springframework.kafka.config.ConcurrentKafkaListenerContainerFactory;
+import org.springframework.kafka.core.ConsumerFactory;
+import org.springframework.kafka.core.DefaultKafkaConsumerFactory;
+import org.springframework.kafka.core.KafkaTemplate;
+import org.springframework.kafka.listener.DeadLetterPublishingRecoverer;
+import org.springframework.kafka.listener.DefaultErrorHandler;
+import org.springframework.kafka.support.serializer.JacksonJsonDeserializer;  // CHANGED
+import org.springframework.util.backoff.FixedBackOff;
+
+import java.util.HashMap;
+import java.util.Map;
+
+@Configuration
+public class KafkaConsumerConfig {
+
+    @Value("${spring.kafka.bootstrap-servers}")
+    private String bootstrapServers;
+
+    @Bean
+    public ConsumerFactory<String, Object> consumerFactory() {
+        Map<String, Object> props = new HashMap<>();
+        props.put(ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG, bootstrapServers);
+        props.put(ConsumerConfig.GROUP_ID_CONFIG, "account-service-group");
+        props.put(ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG, "org.apache.kafka.common.serialization.StringDeserializer");
+        props.put(ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG, JacksonJsonDeserializer.class);  // CHANGED
+        props.put(JacksonJsonDeserializer.TRUSTED_PACKAGES, "com.bank.account.event");             // CHANGED (see note below)
+        return new DefaultKafkaConsumerFactory<>(props);
+    }
+
+    @Bean
+    public ConcurrentKafkaListenerContainerFactory<String, Object> kafkaListenerContainerFactory(
+            KafkaTemplate<String, Object> kafkaTemplate) {
+
+        ConcurrentKafkaListenerContainerFactory<String, Object> factory =
+                new ConcurrentKafkaListenerContainerFactory<>();
+        factory.setConsumerFactory(consumerFactory());
+
+        DeadLetterPublishingRecoverer recoverer =
+                new DeadLetterPublishingRecoverer(kafkaTemplate);
+        DefaultErrorHandler errorHandler =
+                new DefaultErrorHandler(recoverer, new FixedBackOff(2000L, 3));
+        factory.setCommonErrorHandler(errorHandler);
+
+        return factory;
+    }
+}________________________________________
+7. New file — backend/account-service/src/main/java/com/bank/account/listener/TransactionEventListener.java
+java
+package com.bank.account.listener;
+
+import com.bank.account.event.DepositEvent;
+import com.bank.account.event.WithdrawalEvent;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.kafka.annotation.KafkaListener;
+import org.springframework.stereotype.Component;
+
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+
+@Component
+public class TransactionEventListener {
+
+    private static final Logger log = LoggerFactory.getLogger(TransactionEventListener.class);
+    private final Set<String> processedEventIds = ConcurrentHashMap.newKeySet();
+
+    @KafkaListener(topics = "deposit-events", groupId = "notification-service")
+    public void onDeposit(DepositEvent event) {
+        if (!processedEventIds.add(event.getEventId())) {
+            log.warn("Duplicate deposit event ignored: {}", event.getEventId());
+            return;
+        }
+        log.info("Notify: deposit of {} on account {} — new balance {}",
+                event.getAmount(), event.getAccountId(), event.getNewBalance());
+    }
+
+    @KafkaListener(topics = "withdrawal-events", groupId = "notification-service")
+    public void onWithdrawal(WithdrawalEvent event) {
+        if (!processedEventIds.add(event.getEventId())) {
+            log.warn("Duplicate withdrawal event ignored: {}", event.getEventId());
+            return;
+        }
+        log.info("Notify: withdrawal of {} on account {} — new balance {}",
+                event.getAmount(), event.getAccountId(), event.getNewBalance());
+    }
+}
+________________________________________
+8. Modify — backend/account-service/src/main/java/com/bank/account/service/AccountService.java
+a) Add imports at the top:
+java
+import com.bank.account.event.DepositEvent;
+import com.bank.account.event.WithdrawalEvent;
+import org.springframework.kafka.core.KafkaTemplate;
+b) Add a field and update the constructor:
+java
+private final KafkaTemplate<String, Object> kafkaTemplate;
+
+public AccountService(
+        AccountRepository accountRepository,
+        TransactionRepository transactionRepository,
+        CustomerServiceClient customerServiceClient,
+        KafkaTemplate<String, Object> kafkaTemplate) {
+
+    this.accountRepository = accountRepository;
+    this.transactionRepository = transactionRepository;
+    this.customerServiceClient = customerServiceClient;
+    this.kafkaTemplate = kafkaTemplate;
+}
+c) In deposit(), add this right before return savedAccount;:
+
+DepositEvent event = new DepositEvent(accountId, amount, newBalance);
+kafkaTemplate.send("deposit-events", accountId.toString(), event);
+d) In withdraw(), add this right before return savedAccount;:
+
+WithdrawalEvent event = new WithdrawalEvent(accountId, amount, newBalance);
+kafkaTemplate.send("withdrawal-events", accountId.toString(), event);
+Everything else in AccountService.java stays exactly as-is.
+________________________________________
+
+Updated docker compose.yml
+services:
+
+  # ============================================================
+  # PostgreSQL Database
+  # ============================================================
+  postgres:
+    image: postgres:16
+    container_name: postgres
+
+    environment:
+      POSTGRES_DB: customer_db
+      POSTGRES_USER: banking
+      POSTGRES_PASSWORD: banking
+
+    ports:
+      - "5432:5432"
+
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./docker/postgres/init:/docker-entrypoint-initdb.d
+
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U banking -d customer_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+    networks:
+      - banking-network
+
+
+  # ============================================================
+  # Zookeeper
+  # ============================================================
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.6.0
+    container_name: zookeeper
+
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+
+    networks:
+      - banking-network
+
+
+  # ============================================================
+  # Kafka
+  # ============================================================
+  kafka:
+    image: confluentinc/cp-kafka:7.6.0
+    container_name: kafka
+
+    depends_on:
+      - zookeeper
+
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+
+    ports:
+      - "9092:9092"
+
+    networks:
+      - banking-network
+
+
+  # ============================================================
+  # Customer Service
+  # ============================================================
+  customer-service:
+    build:
+      context: ./backend/customer-service
+
+    container_name: customer-service
+
+    environment:
+      DB_URL: jdbc:postgresql://postgres:5432/customer_db
+      DB_USERNAME: banking
+      DB_PASSWORD: banking
+
+    ports:
+      - "8081:8081"
+
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+    networks:
+      - banking-network
+
+
+  # ============================================================
+  # Account Service
+  # ============================================================
+  account-service:
+    build:
+      context: ./backend/account-service
+
+    container_name: account-service
+
+    environment:
+      DB_URL: jdbc:postgresql://postgres:5432/account_db
+      DB_USERNAME: banking
+      DB_PASSWORD: banking
+      CUSTOMER_SERVICE_URL: http://customer-service:8081
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+
+    ports:
+      - "8082:8082"
+
+    depends_on:
+      postgres:
+        condition: service_healthy
+      customer-service:
+        condition: service_started
+      kafka:
+        condition: service_started
+
+    networks:
+      - banking-network
+
+
+  # ============================================================
+  # React Frontend - Nginx Production Container
+  # ============================================================
+  frontend:
+    build:
+      context: ./frontend
+
+    container_name: frontend
+
+    ports:
+      - "5173:80"
+
+    depends_on:
+      customer-service:
+        condition: service_started
+      account-service:
+        condition: service_started
+
+    networks:
+      - banking-network
+
+
+# ==============================================================
+# Persistent PostgreSQL Volume
+# ==============================================================
+volumes:
+  postgres-data:
+
+
+# ==============================================================
+# Existing Docker Network
+# ==============================================================
+networks:
+  banking-network:
+    external: true
+
+After you make these changes
+bash
+cd backend/account-service
+./mvnw clean package -DskipTests
+docker build -t solo01akslab.azurecr.io/account-service:t01-v2-kafka .
+docker push solo01akslab.azurecr.io/account-service:t01-v2-kafka
+Then update the image tag in your manifest and redeploy using the rolling-update approach from before:
+bash
+kubectl set image deployment/account-service \
+  account-service=solo01akslab.azurecr.io/account-service:t01-v2-kafka \
+  -n retail-banking
+kubectl rollout status deployment/account-service -n retail-banking
+Want me to also update the app-services.yml file I generated earlier with this exact tag so it's ready to reapply once you've pushed the image?
+
