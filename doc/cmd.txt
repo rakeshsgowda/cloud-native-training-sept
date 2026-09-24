@@ -31,3 +31,4 @@ For your Frontend: kubectl logs deployment/frontend -n arosa19
 For Customer Backend: kubectl logs deployment/customer-service -n arosa19
 For Account Backend: kubectl logs deployment/account-service -n arosa19
 For Database: kubectl logs deployment/postgres -n arosa19
+

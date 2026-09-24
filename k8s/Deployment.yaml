@@ -354,14 +354,6 @@ spec:
   rules:
     - http:
         paths:
-          # 1. Routes base traffic to the frontend website
-          - path: /()(.*)
-            pathType: ImplementationSpecific
-            backend:
-              service:
-                name: frontend-service
-                port:
-                  number: 7000
           # 2. Proxy routes /api/customer paths seamlessly to the customer backend
           - path: /api/customer(/(.*))?
             pathType: ImplementationSpecific
@@ -370,6 +362,7 @@ spec:
                 name: customer-service
                 port:
                   number: 8081
+
           # 3. Proxy routes /api/account paths seamlessly to the account backend
           - path: /api/account(/(.*))?
             pathType: ImplementationSpecific
@@ -378,3 +371,13 @@ spec:
                 name: account-service
                 port:
                   number: 8082
+
+          # 1. Routes base traffic to the frontend website
+          - path: /()(.*)
+            pathType: ImplementationSpecific
+            backend:
+              service:
+                name: frontend-service
+                port:
+                  number: 7000
+
