@@ -32,3 +32,6 @@ For Customer Backend: kubectl logs deployment/customer-service -n arosa19
 For Account Backend: kubectl logs deployment/account-service -n arosa19
 For Database: kubectl logs deployment/postgres -n arosa19
 
+Openshift
+
+oc create deployment customer-service --image=solo01akslab.azurecr.io/customer-service:arosa19

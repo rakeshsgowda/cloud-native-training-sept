@@ -348,14 +348,17 @@ metadata:
   name: retail-app-ingress
   namespace: arosa19
   annotations:
-    nginx.ingress.kubernetes.io/rewrite-target: /$2
+    # Forces Nginx to parse the strings as regex matches
+    nginx.ingress.kubernetes.io/use-regex: "true"
+
+    nginx.ingress.kubernetes.io/rewrite-target: /$1
 spec:
   ingressClassName: webapprouting.kubernetes.azure.com
   rules:
     - http:
         paths:
-          # 2. Proxy routes /api/customer paths seamlessly to the customer backend
-          - path: /api/customer(/(.*))?
+          # Routes /api/customer/details -> customer-service:8081/details
+          - path: /api/customer/?(.*)
             pathType: ImplementationSpecific
             backend:
               service:
@@ -363,8 +366,8 @@ spec:
                 port:
                   number: 8081
 
-          # 3. Proxy routes /api/account paths seamlessly to the account backend
-          - path: /api/account(/(.*))?
+          # Routes /api/account/balance -> account-service:8082/balance
+          - path: /api/account/?(.*)
             pathType: ImplementationSpecific
             backend:
               service:

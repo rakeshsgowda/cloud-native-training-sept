@@ -3,7 +3,10 @@
 
 window._env_ = {
     // The browser automatically attaches the current domain/IP it is visiting
-    VITE_CUSTOMER_API_URL: window.location.origin + "/api/customer",
+    // VITE_CUSTOMER_API_URL: window.location.origin + "/api/customer",
     VITE_ACCOUNT_API_URL: window.location.origin + "/api/account"
+    //
+    VITE_CUSTOMER_API_URL: "localhost:8081",
+    VITE_ACCOUNT_API_URL: "localhost:8082"
 };
 

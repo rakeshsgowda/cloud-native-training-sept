@@ -16,20 +16,28 @@ import java.time.LocalDateTime;
 import java.util.List;
 import java.util.UUID;
 
+import com.bank.account.event.DepositEvent;
+import com.bank.account.event.WithdrawalEvent;
+import org.springframework.kafka.core.KafkaTemplate;
+
 @Service
 public class AccountService {
 
     private final AccountRepository accountRepository;
     private final TransactionRepository transactionRepository;
     private final CustomerServiceClient customerServiceClient;
+    private final KafkaTemplate<String, Object> kafkaTemplate;
+
     public AccountService(
             AccountRepository accountRepository,
             TransactionRepository transactionRepository,
-            CustomerServiceClient customerServiceClient) {
+            CustomerServiceClient customerServiceClient,
+            KafkaTemplate<String, Object> kafkaTemplate) {
 
         this.accountRepository = accountRepository;
         this.transactionRepository = transactionRepository;
         this.customerServiceClient = customerServiceClient;
+        this.kafkaTemplate = kafkaTemplate;
     }
 
     /**
@@ -116,6 +124,9 @@ public class AccountService {
                 newBalance
         );
 
+        DepositEvent event = new DepositEvent(accountId, amount, newBalance);
+        kafkaTemplate.send("deposit-events", accountId.toString(), event);
+
         return savedAccount;
     }
 
@@ -154,6 +165,9 @@ public class AccountService {
                 amount,
                 newBalance
         );
+
+        WithdrawalEvent event = new WithdrawalEvent(accountId, amount, newBalance);
+        kafkaTemplate.send("withdrawal-events", accountId.toString(), event);
 
         return savedAccount;
     }

@@ -16,6 +16,37 @@ services:
     volumes:
       - banking-data:/var/lib/postgresql/data
 
+  kafka:
+    image: confluentinc/cp-kafka:7.6.0
+    container_name: kafka
+    ports:
+      - "9092:9092"
+      - "29092:29092"
+    environment:
+      # KRaft Configuration
+      KAFKA_NODE_ID: 1
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: 'CONTROLLER:PLAINTEXT,INTERNAL:PLAINTEXT,EXTERNAL:PLAINTEXT'
+      KAFKA_ADVERTISED_LISTENERS: 'INTERNAL://kafka:9092,EXTERNAL://localhost:29092'
+      KAFKA_LISTENERS: 'INTERNAL://0.0.0.0:9092,EXTERNAL://0.0.0.0:29092,CONTROLLER://0.0.0.0:9093'
+      KAFKA_INTER_BROKER_LISTENER_NAME: 'INTERNAL'
+      KAFKA_CONTROLLER_LISTENER_NAMES: 'CONTROLLER'
+      KAFKA_CONTROLLER_QUORUM_VOTERS: '1@kafka:9093'
+      KAFKA_PROCESS_ROLES: 'broker,controller'
+
+      # Cluster & Topic Settings
+      CLUSTER_ID: 'MkU3OEVBNTcwNTJENDM2Qk'
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_LOG_DIRS: '/tmp/kraft-combined-logs'
+    healthcheck:
+      test: [ "CMD", "kafka-broker-api-versions", "--bootstrap-server", "localhost:9092" ]
+      interval: 10s
+      timeout: 10s
+      retries: 5
+    networks:
+      - app-network
+
   customer-service:
     build: ./backend/customer-service
     image: solo01akslab.azurecr.io/customer-service:arosa19
@@ -34,7 +65,8 @@ services:
 
   account-service:
     build: ./backend/account-service
-    image: solo01akslab.azurecr.io/account-service:arosa19
+    image: solo01akslab.azurecr.io/account-service:arosa19-kafka
+    #image: solo01akslab.azurecr.io/account-service:arosa19
     container_name: account-service
     restart: always
     environment:
@@ -42,17 +74,20 @@ services:
       DB_USERNAME: $DB_USER
       DB_PASSWORD: $DB_PASSWORD
       CUSTOMER_SERVICE_URL: http://customer-service:8081
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
     ports:
       - "8082:8082"
     depends_on:
       - postgres
       - customer-service
+      - kafka
     networks:
       - app-network
 
   frontend:
     build: ./frontend
-    image: solo01akslab.azurecr.io/frontend:arosa19
+    image: solo01akslab.azurecr.io/frontend:arosa19-noncontext
+    #image: solo01akslab.azurecr.io/frontend:arosa19
     container_name: frontend
     restart: always
     environment:
