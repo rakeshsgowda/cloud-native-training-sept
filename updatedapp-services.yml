@@ -1,0 +1,722 @@
+# ============================================================
+# RETAIL BANKING - SINGLE FILE DEPLOYMENT (app-services.yml)
+# ============================================================
+#
+# Deploys EVERYTHING from a fresh cluster:
+#   Namespace -> Secret -> ConfigMap -> Postgres -> Kafka ->
+#   account-service -> customer-service -> frontend ->
+#   Ingress -> NetworkPolicies (egress lockdown)
+#
+# BEFORE APPLYING:
+#   1. Edit the DB_PASSWORD value below (search CHANGE_ME)
+#   2. Install the NGINX Ingress Controller once (cluster-wide,
+#      not part of this file):
+#
+#        helm repo add ingress-nginx https://kubernetes.github.io/ingress-nginx
+#        helm repo update
+#        helm install nginx-ingress ingress-nginx/ingress-nginx \
+#          --namespace ingress-basic --create-namespace \
+#          --set controller.replicaCount=2
+#
+# APPLY:
+#   kubectl apply -f app-services.yml
+#
+# WATCH:
+#   kubectl get pods -n retail-banking -w
+#
+# ============================================================
+
+
+# ============================================================
+# 1. NAMESPACE
+# ============================================================
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: retail-banking
+
+---
+# ============================================================
+# 2. SECRET (DB credentials for postgres + both services)
+# ============================================================
+# stringData is used so you can type the password in plain
+# text here - Kubernetes base64-encodes it automatically when
+# the object is created/stored.
+# ============================================================
+apiVersion: v1
+kind: Secret
+metadata:
+  name: app-secret
+  namespace: retail-banking
+type: Opaque
+stringData:
+  DB_USERNAME: banking
+  DB_PASSWORD: banking
+
+---
+# ============================================================
+# 3. POSTGRES INIT CONFIGMAP (creates DBs + grants to 'banking')
+# ============================================================
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: postgres-init-script
+  namespace: retail-banking
+data:
+  01-create-databases.sql: |
+    CREATE DATABASE customer_db;
+    CREATE DATABASE account_db;
+
+    \connect customer_db
+
+    GRANT ALL PRIVILEGES ON DATABASE customer_db TO banking;
+    GRANT ALL PRIVILEGES ON SCHEMA public TO banking;
+    GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO banking;
+    GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO banking;
+
+    ALTER DEFAULT PRIVILEGES IN SCHEMA public
+        GRANT ALL PRIVILEGES ON TABLES TO banking;
+
+    ALTER DEFAULT PRIVILEGES IN SCHEMA public
+        GRANT ALL PRIVILEGES ON SEQUENCES TO banking;
+
+    \connect account_db
+
+    GRANT ALL PRIVILEGES ON DATABASE account_db TO banking;
+    GRANT ALL PRIVILEGES ON SCHEMA public TO banking;
+    GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO banking;
+    GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO banking;
+
+    ALTER DEFAULT PRIVILEGES IN SCHEMA public
+        GRANT ALL PRIVILEGES ON TABLES TO banking;
+
+    ALTER DEFAULT PRIVILEGES IN SCHEMA public
+        GRANT ALL PRIVILEGES ON SEQUENCES TO banking;
+
+---
+# ============================================================
+# 4. POSTGRESQL DEPLOYMENT
+# ============================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgres
+  namespace: retail-banking
+spec:
+  replicas: 1
+
+  selector:
+    matchLabels:
+      app: postgres
+
+  template:
+    metadata:
+      labels:
+        app: postgres
+
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:16-alpine
+
+          ports:
+            - containerPort: 5432
+
+          env:
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef:
+                  name: app-secret
+                  key: DB_USERNAME
+
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: app-secret
+                  key: DB_PASSWORD
+
+          volumeMounts:
+            - name: postgres-init
+              mountPath: /docker-entrypoint-initdb.d
+
+      volumes:
+        - name: postgres-init
+          configMap:
+            name: postgres-init-script
+
+---
+# ============================================================
+# 5. POSTGRESQL SERVICE
+# ============================================================
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  namespace: retail-banking
+
+spec:
+  type: ClusterIP
+
+  ports:
+    - port: 5432
+      targetPort: 5432
+
+  selector:
+    app: postgres
+
+---
+# ============================================================
+# 6. KAFKA DEPLOYMENT
+# ============================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kafka
+  namespace: retail-banking
+
+spec:
+  replicas: 1
+
+  selector:
+    matchLabels:
+      app: kafka
+
+  template:
+    metadata:
+      labels:
+        app: kafka
+
+    spec:
+      containers:
+        - name: kafka
+          image: confluentinc/cp-kafka:7.6.0
+
+          ports:
+            - containerPort: 9092
+            - containerPort: 9093
+
+          env:
+            - name: KAFKA_NODE_ID
+              value: "1"
+
+            - name: KAFKA_PROCESS_ROLES
+              value: "broker,controller"
+
+            - name: KAFKA_CONTROLLER_QUORUM_VOTERS
+              value: "1@localhost:9093"   # FIX: was "1@kafka:9093" - Service DNS has no
+                # endpoints yet at boot (pod not Ready), causing
+                # a chicken-and-egg failure. Single-node KRaft
+              # controller talks to itself, so localhost is correct.
+
+            - name: KAFKA_CONTROLLER_LISTENER_NAMES
+              value: "CONTROLLER"
+
+            - name: KAFKA_LISTENERS
+              value: "INTERNAL://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093"
+
+            - name: KAFKA_ADVERTISED_LISTENERS
+              value: "INTERNAL://kafka:9092"
+
+            - name: KAFKA_LISTENER_SECURITY_PROTOCOL_MAP
+              value: "CONTROLLER:PLAINTEXT,INTERNAL:PLAINTEXT"
+
+            - name: KAFKA_INTER_BROKER_LISTENER_NAME
+              value: "INTERNAL"
+
+            - name: CLUSTER_ID
+              value: "MkU3OEVBNTcwNTJENDM2Qk"
+
+            - name: KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR
+              value: "1"
+
+            - name: KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR
+              value: "1"
+
+            - name: KAFKA_TRANSACTION_STATE_LOG_MIN_ISR
+              value: "1"
+
+            - name: KAFKA_LOG_DIRS
+              value: "/tmp/kraft-combined-logs"
+
+          readinessProbe:
+            tcpSocket:
+              port: 9092
+            initialDelaySeconds: 20
+            periodSeconds: 10
+            failureThreshold: 12
+
+          livenessProbe:
+            tcpSocket:
+              port: 9092
+            initialDelaySeconds: 30
+            periodSeconds: 15
+            failureThreshold: 5
+
+---
+# ============================================================
+# 7. KAFKA SERVICE
+# ============================================================
+apiVersion: v1
+kind: Service
+metadata:
+  name: kafka
+  namespace: retail-banking
+
+spec:
+  type: ClusterIP
+
+  ports:
+    - name: kafka
+      port: 9092
+      targetPort: 9092
+
+  selector:
+    app: kafka
+
+---
+# ============================================================
+# 8. ACCOUNT SERVICE DEPLOYMENT
+# ============================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: account-service
+  namespace: retail-banking
+
+spec:
+  replicas: 1
+
+  selector:
+    matchLabels:
+      app: account-service
+
+  template:
+    metadata:
+      labels:
+        app: account-service
+
+    spec:
+      containers:
+        - name: account-service
+          image: solo01akslab.azurecr.io/account-service:t01-v2
+
+          ports:
+            - containerPort: 8082
+
+          env:
+            - name: DB_URL
+              value: "jdbc:postgresql://postgres.retail-banking.svc.cluster.local:5432/account_db"
+
+            - name: DB_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: app-secret
+                  key: DB_USERNAME
+
+            - name: DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: app-secret
+                  key: DB_PASSWORD
+
+            - name: CUSTOMER_SERVICE_URL
+              value: "http://customer-service:8081"
+
+            - name: KAFKA_BOOTSTRAP_SERVERS
+              value: "kafka:9092"
+
+          resources:
+            requests:
+              memory: "256Mi"
+              cpu: "250m"
+
+            limits:
+              memory: "512Mi"
+              cpu: "500m"
+
+          startupProbe:
+            tcpSocket:
+              port: 8082
+            initialDelaySeconds: 20
+            periodSeconds: 10
+            failureThreshold: 12
+
+          readinessProbe:
+            tcpSocket:
+              port: 8082
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            failureThreshold: 6
+
+          livenessProbe:
+            tcpSocket:
+              port: 8082
+            initialDelaySeconds: 30
+            periodSeconds: 15
+            failureThreshold: 5
+
+---
+# ============================================================
+# 9. ACCOUNT SERVICE (Service object)
+# ============================================================
+apiVersion: v1
+kind: Service
+metadata:
+  name: account-service
+  namespace: retail-banking
+
+spec:
+  type: ClusterIP
+
+  ports:
+    - port: 8082
+      targetPort: 8082
+
+  selector:
+    app: account-service
+
+---
+# ============================================================
+# 10. CUSTOMER SERVICE DEPLOYMENT
+# ============================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: customer-service
+  namespace: retail-banking
+
+spec:
+  replicas: 1
+
+  selector:
+    matchLabels:
+      app: customer-service
+
+  template:
+    metadata:
+      labels:
+        app: customer-service
+
+    spec:
+      containers:
+        - name: customer-service
+          image: solo01akslab.azurecr.io/customer-service:t01-v2
+
+          ports:
+            - containerPort: 8081
+
+          env:
+            - name: DB_URL
+              value: "jdbc:postgresql://postgres.retail-banking.svc.cluster.local:5432/customer_db"
+
+            - name: DB_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: app-secret
+                  key: DB_USERNAME
+
+            - name: DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: app-secret
+                  key: DB_PASSWORD
+
+          resources:
+            requests:
+              memory: "256Mi"
+              cpu: "250m"
+
+            limits:
+              memory: "512Mi"
+              cpu: "500m"
+
+          startupProbe:
+            tcpSocket:
+              port: 8081
+            initialDelaySeconds: 20
+            periodSeconds: 10
+            failureThreshold: 12
+
+          readinessProbe:
+            tcpSocket:
+              port: 8081
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            failureThreshold: 6
+
+          livenessProbe:
+            tcpSocket:
+              port: 8081
+            initialDelaySeconds: 30
+            periodSeconds: 15
+            failureThreshold: 5
+
+---
+# ============================================================
+# 11. CUSTOMER SERVICE (Service object)
+# ============================================================
+apiVersion: v1
+kind: Service
+metadata:
+  name: customer-service
+  namespace: retail-banking
+
+spec:
+  type: ClusterIP
+
+  ports:
+    - port: 8081
+      targetPort: 8081
+
+  selector:
+    app: customer-service
+
+---
+# ============================================================
+# 12. FRONTEND DEPLOYMENT
+# ============================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: frontend
+  namespace: retail-banking
+
+spec:
+  replicas: 1
+
+  selector:
+    matchLabels:
+      app: frontend
+
+  template:
+    metadata:
+      labels:
+        app: frontend
+
+    spec:
+      containers:
+        - name: frontend
+          image: solo01akslab.azurecr.io/frontend:t01-v1
+
+          ports:
+            - containerPort: 80
+
+          resources:
+            requests:
+              memory: "64Mi"
+              cpu: "100m"
+
+            limits:
+              memory: "128Mi"
+              cpu: "250m"
+
+---
+# ============================================================
+# 13. FRONTEND SERVICE
+# ============================================================
+# ClusterIP, not LoadBalancer - the NGINX Ingress Controller
+# below is the single public entry point for the whole app.
+# ============================================================
+apiVersion: v1
+kind: Service
+metadata:
+  name: frontend
+  namespace: retail-banking
+
+spec:
+  type: ClusterIP
+
+  ports:
+    - port: 80
+      targetPort: 80
+
+  selector:
+    app: frontend
+
+---
+# ============================================================
+# 14. INGRESS - retail-banking
+# ============================================================
+# Requires the NGINX Ingress Controller to already be installed
+# (see the SETUP note at the top of this file).
+#
+# Routes:
+#   /                  -> frontend:80
+#   /api/customers/*   -> customer-service:8081
+#   /api/accounts/*    -> account-service:8082
+# ============================================================
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: retail-banking-ingress
+  namespace: retail-banking
+  annotations:
+    nginx.ingress.kubernetes.io/use-regex: "true"
+    nginx.ingress.kubernetes.io/rewrite-target: /$2
+    nginx.ingress.kubernetes.io/ssl-redirect: "false"   # set true once a TLS cert is attached
+spec:
+  ingressClassName: nginx
+  rules:
+    - http:
+        paths:
+          - path: /api/customers(/|$)(.*)
+            pathType: ImplementationSpecific
+            backend:
+              service:
+                name: customer-service
+                port:
+                  number: 8081
+          - path: /api/accounts(/|$)(.*)
+            pathType: ImplementationSpecific
+            backend:
+              service:
+                name: account-service
+                port:
+                  number: 8082
+          - path: /()(.*)
+            pathType: ImplementationSpecific
+            backend:
+              service:
+                name: frontend
+                port:
+                  number: 80
+
+---
+# ============================================================
+# 15. DEFAULT DENY ALL EGRESS (retail-banking namespace)
+# ============================================================
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-egress
+  namespace: retail-banking
+spec:
+  podSelector: {}
+  policyTypes:
+    - Egress
+
+---
+# ============================================================
+# 16. ALLOW customer-service EGRESS -> postgres + kafka + DNS
+# ============================================================
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-customer-service-egress
+  namespace: retail-banking
+spec:
+  podSelector:
+    matchLabels:
+      app: customer-service
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app: postgres
+      ports:
+        - protocol: TCP
+          port: 5432
+    - to:
+        - podSelector:
+            matchLabels:
+              app: kafka
+      ports:
+        - protocol: TCP
+          port: 9092
+    - to: []
+      ports:
+        - protocol: UDP
+          port: 53
+
+---
+# ============================================================
+# 17. ALLOW account-service EGRESS -> postgres + kafka +
+#     customer-service + DNS
+# ============================================================
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-account-service-egress
+  namespace: retail-banking
+spec:
+  podSelector:
+    matchLabels:
+      app: account-service
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app: postgres
+      ports:
+        - protocol: TCP
+          port: 5432
+    - to:
+        - podSelector:
+            matchLabels:
+              app: kafka
+      ports:
+        - protocol: TCP
+          port: 9092
+    - to:
+        - podSelector:
+            matchLabels:
+              app: customer-service
+      ports:
+        - protocol: TCP
+          port: 8081
+    - to: []
+      ports:
+        - protocol: UDP
+          port: 53
+
+---
+# ============================================================
+# 18. ALLOW frontend EGRESS -> customer-service + account-service + DNS
+# ============================================================
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-frontend-egress
+  namespace: retail-banking
+spec:
+  podSelector:
+    matchLabels:
+      app: frontend
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app: customer-service
+      ports:
+        - protocol: TCP
+          port: 8081
+    - to:
+        - podSelector:
+            matchLabels:
+              app: account-service
+      ports:
+        - protocol: TCP
+          port: 8082
+    - to: []
+      ports:
+        - protocol: UDP
+          port: 53
+
+# ============================================================
+# VERIFICATION COMMANDS
+# ============================================================
+#   kubectl get all -n retail-banking
+#   kubectl get ingress -n retail-banking
+#   kubectl get networkpolicy -n retail-banking
+#
+#   az aks show --resource-group <rg-name> --name <aks-cluster-name> \
+#     --query "networkProfile.networkPolicy" -o tsv
+#   (empty/null = NetworkPolicy objects above are accepted but NOT enforced)
+# ============================================================
+

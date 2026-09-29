@@ -1,0 +1,8 @@
+description
+Service {{ $labels.job }} on instance {{ $labels.instance }} has an 'up' value of {{ $value }}, indicating it is unreachable. Check container status and logs 
+
+
+
+
+summary
+{{ $labels.job }} is down
